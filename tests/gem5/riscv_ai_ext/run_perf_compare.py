@@ -242,6 +242,13 @@ def main() -> None:
         help="Forward --no-cache to perf_binary_run.py (direct-to-memory, no L1/L2).",
     )
     parser.add_argument(
+        "--memory",
+        choices=("ddr3", "fast-ram"),
+        default="ddr3",
+        help="Forward --memory to perf_binary_run.py. Pair --no-cache --memory "
+        "fast-ram for the kit-like RAM sensitivity point.",
+    )
+    parser.add_argument(
         "--no-o3-fdp",
         action="store_true",
         help="Forward --no-o3-fdp to perf_binary_run.py for coupled O3 runs.",
@@ -278,6 +285,7 @@ def main() -> None:
     summary: dict[str, Any] = {
         "cpu": args.cpu,
         "no_cache": args.no_cache,
+        "memory": args.memory,
         "no_o3_fdp": args.no_o3_fdp,
         "baseline_repo": str(baseline_repo),
         "update_repo": str(update_repo),
@@ -314,6 +322,7 @@ def main() -> None:
             ]
             if args.no_cache:
                 command.append("--no-cache")
+            command.extend(["--memory", args.memory])
             if args.no_o3_fdp:
                 command.append("--no-o3-fdp")
             completed = run_command(command, cwd=gem5_repo, output_dir=case_output_dir)
