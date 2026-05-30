@@ -254,7 +254,12 @@ class BAC
     void refreshHardwareLoopState(ThreadID tid);
 
     /** Predict an early loop-back for a non-control instruction if possible. */
-    bool predictHardwareLoop(const DynInstPtr &inst, PCStateBase &fetch_pc);
+    bool predictHardwareLoop(const DynInstPtr &inst, PCStateBase &fetch_pc,
+                             bool require_arch_count = true);
+
+    /** Build a decoupled fetch target for a visible hardware-loop tail. */
+    bool predictHardwareLoopFetchTarget(ThreadID tid, Addr search_addr,
+                                        PCStateBase &target_pc);
 
   private:
     /* ----------------------------------------------------------------

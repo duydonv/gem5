@@ -15,6 +15,7 @@ from gem5.components.cachehierarchies.classic.private_l1_shared_l2_cache_hierarc
     PrivateL1SharedL2CacheHierarchy,
 )
 from gem5.components.memory import SingleChannelDDR3_1600
+from gem5.components.memory.simple import SingleChannelSimpleMemory
 from gem5.components.processors.cpu_types import (
     get_cpu_type_from_str,
     get_cpu_types_str_set,
@@ -23,6 +24,12 @@ from gem5.components.processors.simple_processor import SimpleProcessor
 from gem5.isas import ISA
 from gem5.resources.resource import BinaryResource
 from gem5.simulate.simulator import Simulator
+
+
+FAST_RAM_LATENCY = "1ns"
+FAST_RAM_LATENCY_VAR = "0ns"
+FAST_RAM_BANDWIDTH = "256GiB/s"
+FAST_RAM_SIZE = "512MiB"
 
 
 def _enable_riscv_o3_decoupled_frontend(processor) -> None:
@@ -67,6 +74,14 @@ parser.add_argument(
     help="No L1/L2: CPU ports go straight to memory (old behavior). "
     "Default: 32KiB L1I + 32KiB L1D (8-way) + 256KiB shared L2 (16-way).",
 )
+parser.add_argument(
+    "--memory",
+    choices=("ddr3", "fast-ram"),
+    default="ddr3",
+    help="Backing memory model. Use --no-cache --memory fast-ram to approximate "
+    f"kit firmware running from low-latency RAM ({FAST_RAM_LATENCY}, "
+    f"{FAST_RAM_BANDWIDTH}). Default: ddr3.",
+)
 args = parser.parse_args()
 
 binary_path = Path(args.binary).resolve()
@@ -86,7 +101,15 @@ else:
         l1d_assoc=8,
         l2_assoc=16,
     )
-memory = SingleChannelDDR3_1600()
+if args.memory == "fast-ram":
+    memory = SingleChannelSimpleMemory(
+        latency=FAST_RAM_LATENCY,
+        latency_var=FAST_RAM_LATENCY_VAR,
+        bandwidth=FAST_RAM_BANDWIDTH,
+        size=FAST_RAM_SIZE,
+    )
+else:
+    memory = SingleChannelDDR3_1600()
 processor = SimpleProcessor(
     cpu_type=get_cpu_type_from_str(args.cpu), isa=ISA.RISCV, num_cores=1
 )

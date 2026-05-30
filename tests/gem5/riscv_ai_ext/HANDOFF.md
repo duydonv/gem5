@@ -120,6 +120,7 @@ Build and run:
 python3 tests/gem5/riscv_ai_ext/build_perf_binaries.py
 python3 tests/gem5/riscv_ai_ext/run_perf_compare.py --skip-build
 python3 tests/gem5/riscv_ai_ext/run_perf_compare.py --skip-build --no-cache
+python3 tests/gem5/riscv_ai_ext/run_perf_compare.py --skip-build --no-cache --memory fast-ram
 ```
 
 Observed results on 2026-05-26:
@@ -132,6 +133,11 @@ Observed results on 2026-05-26:
   - `mac_clamp`: custom barely faster, about `1.002x`.
   - `dot4_acc_clamp`: custom about `3.26x`.
   - `dot4_plw_lp_clamp`: custom about `8.91x`.
+- NoCache + fast-ram (`SingleChannelSimpleMemory`, `1ns`, `256GiB/s`):
+  - `mac_clamp`: custom barely faster, about `1.0007x`.
+  - `dot4_acc_clamp`: custom about `3.2525x`.
+  - `dot4_plw_lp_clamp`: custom about `8.2290x`.
+  - Output: `perf_results/20260526_160300`.
 
 Interpretation so far:
 
@@ -142,9 +148,9 @@ Interpretation so far:
   fused `mac` puts the accumulator dependency directly on the multiply-like op.
 - The current custom `mac` is modeled as an `IntMultOp`; O3 default integer
   multiply latency is a possible modeling mismatch versus the FPGA core.
-- `--no-cache` is useful as a sensitivity test, but current `NoCache` still
-  talks to `SingleChannelDDR3_1600`, so it may overstate memory/fetch cost versus
-  FPGA firmware executing from RAM.
+- `--no-cache` is useful as a sensitivity test. Use plain `--no-cache` for the
+  historical `SingleChannelDDR3_1600` point, and add `--memory fast-ram` for the
+  kit-like low-latency RAM point.
 
 ## Hardware-Loop Microbenchmark
 
@@ -174,28 +180,77 @@ Build and run:
 python3 tests/gem5/riscv_ai_ext/build_hwloop_perf_binaries.py
 python3 tests/gem5/riscv_ai_ext/run_hwloop_perf_compare.py --skip-build
 python3 tests/gem5/riscv_ai_ext/run_hwloop_perf_compare.py --skip-build --no-cache
+python3 tests/gem5/riscv_ai_ext/run_hwloop_perf_compare.py --skip-build --no-cache --memory fast-ram
 ```
 
 Observed results on 2026-05-26:
 
-- Cached O3:
+- Cached O3 before FDP shadow-counter cleanup:
   - Checksums match across `ref`, `swloop`, and `hwloop`.
   - `hwloop` is much slower than `swloop`.
   - Example large: `hwloop speedup vs swloop = 0.5785x`.
   - `nonControlRedirects` is nonzero and scales as `2048/8192/32768`, much lower
     than logical loop-backs but still expensive.
+- Cached O3 after FDP shadow-counter cleanup in `src/cpu/o3/bac.cc`:
+  - Smoke tests pass.
+  - Checksums still match.
+  - Example large: `hwloop speedup vs swloop = 0.6182x`.
+  - `nonControlRedirects` now scales as `1024/4096/16384`.
+  - Interpretation: the synthetic LPEND BTB path no longer over-predicts the
+    final loop tail. One execute-time redirect remains per outer repeat, likely
+    because cached FDP can fetch the first loop tail before the `lp.setup` state
+    is visible to the front-end.
+  - Output: `hwloop_perf_results/20260526_194633`.
+- Cached O3 after first-loop setup/front-end experiment:
+  - Smoke tests pass (`14/14`, including `hwloop_smoke-o3`).
+  - `lp.setup` is now `SerializeBefore + SerializeAfter` instead of
+    `NonSpeculative + SerializeAfter`, so O3 can publish the loop CSRs when the
+    setup reaches execute rather than waiting until it is re-scheduled at ROB
+    head. This is closer to the CV32E40P idea that hardware-loop control state
+    is available before the body tail.
+  - `FetchTarget` now has an explicit hardware-loop-tail marker, so BAC can
+    represent LPEND as a deterministic FT exit without pretending it is a
+    normal branch-predictor entry.
+  - Example large: `hwloop speedup vs swloop = 0.6318x`, `hwloop cycles =
+    3737207`.
+  - `nonControlRedirects` still scales as `1024/4096/16384`; the first dynamic
+    tail of each outer `lp.setup` is still reaching execute, but the cost per
+    residual redirect is lower.
+  - Output: `hwloop_perf_results/20260526_213115`.
+- Rejected setup-time resteer experiment on 2026-05-30:
+  - Added an execute-time IEW squash/resteer immediately after `lp.setup`
+    published loop state, to force BAC/Fetch to rebuild FTs with fresh LP state.
+  - Smoke tests passed, and `nonControlRedirects` went to `0`.
+  - Cached cycles were effectively unchanged (large `3737217`, versus
+    `3737207` before the experiment).
+  - NoCache + fast-ram regressed (large `20055869`, speedup `1.3472x`, versus
+    `19728189`, speedup `1.3696x` before the experiment).
+  - Conclusion: this only moved the penalty from first-tail redirect to
+    setup-time squash/re-fetch, so the code change was reverted.
 - NoCache + DDR3:
   - Checksums match.
   - `hwloop` becomes faster than `swloop`.
   - Example large: `hwloop speedup vs swloop = 1.3928x`.
   - `nonControlRedirects = 0`, so the current front-end path fully hides backend
     loop redirects in this configuration.
+- NoCache + fast-ram:
+  - Checksums match.
+  - `hwloop` is faster than `swloop`.
+  - Before the first-loop setup/front-end experiment, example large:
+    `hwloop speedup vs swloop = 1.3650x`.
+  - After the experiment, example large: `hwloop speedup vs swloop = 1.3696x`,
+    `hwloop cycles = 19728189`.
+  - `nonControlRedirects` scales as `1024/4096/16384`; estimated loop-back
+    elision ratio is about `96.77%`.
+  - Outputs: `hwloop_perf_results/20260526_160323`,
+    `hwloop_perf_results/20260526_212631`.
 
 Current read:
 
 - NoCache results look more favorable for the current hardware-loop path.
 - Cached O3 results show the current custom O3/FDP implementation is not yet
-  clean or optimized.
+  fully optimized: one residual execute-time redirect remains per outer
+  `lp.setup`.
 - FDP was custom-added earlier to make O3 run hardware loops correctly; it is
   not standard upstream O3 behavior and should be reviewed separately.
 
@@ -220,12 +275,13 @@ python3 tests/gem5/riscv_ai_ext/run_hwloop_perf_compare.py --save-baseline
 
 ## Next Work Items
 
-1. Add a more kit-like memory mode.
-   - Current cached O3 is not close to the FPGA core.
-   - Current `--no-cache` uses DDR3 and may over-penalize memory.
-   - Proposed next mode: `NoCache + SingleChannelSimpleMemory` with low latency
-     and high bandwidth, e.g. a `fast-ram` mode, to approximate firmware running
-     from RAM without L1/L2 cache.
+1. Refine the kit-like memory mode if needed.
+   - Implemented `--memory fast-ram` in `perf_binary_run.py` and
+     `local_binary_run.py`.
+   - Current fast-RAM parameters: `SingleChannelSimpleMemory(latency=1ns,
+     latency_var=0ns, bandwidth=256GiB/s, size=512MiB)`.
+   - Main command: `--no-cache --memory fast-ram`.
+   - If the FPGA memory path is characterized later, tune these constants.
 
 2. Review and clean the custom O3/FDP hardware-loop path.
    - Understand why cached O3 still has high `commitSquashedInsts` and expensive
@@ -248,4 +304,3 @@ python3 tests/gem5/riscv_ai_ext/run_hwloop_perf_compare.py --save-baseline
 
 5. After model/test direction is stable, update README and regenerate any
    reference summaries.
-

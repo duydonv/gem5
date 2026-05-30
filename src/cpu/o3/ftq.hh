@@ -105,6 +105,9 @@ class FetchTarget
     /** Whether the exit instruction is a branch */
     bool is_branch;
 
+    /** Whether the exit instruction is a hardware-loop tail. */
+    bool is_hw_loop;
+
     /** If the exit branch is predicted taken */
     bool taken;
 
@@ -150,6 +153,12 @@ class FetchTarget
     isExitBranch(Addr addr)
     {
         return (addr == endAddress()) && is_branch;
+    }
+
+    bool
+    isExitHardwareLoop(Addr addr)
+    {
+        return (addr == endAddress()) && is_hw_loop;
     }
 
     bool
@@ -212,7 +221,7 @@ class FetchTarget
 
     /** Complete a fetch target with the exit instruction */
     void finalize(const PCStateBase &exit_pc, bool _is_branch, bool pred_taken,
-                  const PCStateBase &pred_pc);
+                  const PCStateBase &pred_pc, bool _is_hw_loop = false);
 
     /** Print the fetch target for debugging. */
     std::string toString();

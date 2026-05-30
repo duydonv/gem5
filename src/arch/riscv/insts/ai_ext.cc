@@ -283,7 +283,7 @@ LP_SETUP_I::LP_SETUP_I(ExtMachInst machInst)
     setSrcRegIdx(_numSrcRegs++, rs1);
 
     flags[IsInteger] = true;
-    flags[IsNonSpeculative] = true;
+    flags[IsSerializeBefore] = true;
     flags[IsSerializeAfter] = true;
 }
 

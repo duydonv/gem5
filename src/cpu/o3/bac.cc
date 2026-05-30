@@ -77,47 +77,6 @@ asRiscvISA(gem5::ThreadContext *tc)
     return dynamic_cast<RiscvISA::ISA *>(tc->getIsaPtr());
 }
 
-bool
-hwLoopBackendRedirectExpected(const DynInstPtr &inst)
-{
-    gem5::ThreadContext *tc = inst->tcBase();
-    if (tc->readMiscRegNoEffect(RiscvISA::MISCREG_LPACTIVE) == 0) {
-        return false;
-    }
-
-    auto *isa = asRiscvISA(tc);
-    if (isa == nullptr) {
-        return false;
-    }
-
-    const auto &cur_pc = inst->pcState().as<RiscvISA::PCState>();
-    if (cur_pc.branching()) {
-        return false;
-    }
-
-    const Addr loop_end = isa->rvSext(
-        tc->readMiscRegNoEffect(RiscvISA::MISCREG_LPEND));
-    if (cur_pc.pc() != loop_end) {
-        return false;
-    }
-
-    RegVal arch_remaining =
-        tc->readMiscRegNoEffect(RiscvISA::MISCREG_LPCOUNT);
-
-    auto *o3cpu = dynamic_cast<CPU *>(inst->getCpuPtr());
-    if (o3cpu != nullptr) {
-        const unsigned inflight = o3cpu->countOlderExecutedSameInstAddr(
-            inst->threadNumber, inst->seqNum, loop_end);
-        if (arch_remaining > inflight) {
-            arch_remaining -= inflight;
-        } else {
-            arch_remaining = 1;
-        }
-    }
-
-    return arch_remaining > 1;
-}
-
 } // namespace
 
 bool
@@ -693,7 +652,8 @@ BAC::maintainHardwareLoopBtb(ThreadID tid, const StaticInstPtr &tail_inst,
 }
 
 bool
-BAC::predictHardwareLoop(const DynInstPtr &inst, PCStateBase &fetch_pc)
+BAC::predictHardwareLoop(const DynInstPtr &inst, PCStateBase &fetch_pc,
+                         bool require_arch_count)
 {
     if (inst->isMicroop() && !inst->isLastMicroop()) {
         return false;
@@ -701,6 +661,8 @@ BAC::predictHardwareLoop(const DynInstPtr &inst, PCStateBase &fetch_pc)
 
     const ThreadID tid = inst->threadNumber;
     gem5::ThreadContext *tc = cpu->tcBase(tid);
+    refreshHardwareLoopState(tid);
+
     if (tc->readMiscRegNoEffect(RiscvISA::MISCREG_LPACTIVE) == 0) {
         // Shadow can lag or resurrect across back-to-back lp.setup sites that
         // share the same (start,end) PCs; the architectural bit is authoritative.
@@ -725,14 +687,18 @@ BAC::predictHardwareLoop(const DynInstPtr &inst, PCStateBase &fetch_pc)
         return false;
     }
 
-    // Only redirect when architectural LPCOUNT matches the FE shadow.
-    // If shadow was decremented early but LPCOUNT has not yet committed for
-    // the previous tail, arch_lpcnt > shadow.remaining and we must not redirect
-    // (avoids bogus back-edges across lp.setup reuse in hwloop_smoke O3).
-    const RegVal arch_lpcnt =
-        tc->readMiscRegNoEffect(RiscvISA::MISCREG_LPCOUNT);
-    if (arch_lpcnt != shadow.remaining) {
-        return false;
+    if (require_arch_count) {
+        // Only redirect when architectural LPCOUNT matches the FE shadow.
+        // If shadow was decremented early but LPCOUNT has not yet committed for
+        // the previous tail, arch_lpcnt > shadow.remaining and we must not
+        // redirect (avoids bogus back-edges across lp.setup reuse in
+        // hwloop_smoke O3). Synthetic LPEND BTB exits already represent a
+        // frontend prediction stream, so they consume the shadow directly.
+        const RegVal arch_lpcnt =
+            tc->readMiscRegNoEffect(RiscvISA::MISCREG_LPCOUNT);
+        if (arch_lpcnt != shadow.remaining) {
+            return false;
+        }
     }
 
     const auto &cur_pc = inst->pcState().as<RiscvISA::PCState>();
@@ -758,6 +724,22 @@ BAC::predictHardwareLoop(const DynInstPtr &inst, PCStateBase &fetch_pc)
     // and commitAdvancePC retire LPCOUNT/LPACTIVE; do not clear shadow here or
     // refresh can fight FE and the next lp.setup at the same (start,end) PCs.
     return false;
+}
+
+bool
+BAC::predictHardwareLoopFetchTarget(ThreadID tid, Addr search_addr,
+                                    PCStateBase &target_pc)
+{
+    const auto &shadow = hwLoopState[tid];
+    if (!shadow.valid || !shadow.active || shadow.remaining <= 1 ||
+        search_addr != shadow.end) {
+        return false;
+    }
+
+    auto &loop_start = target_pc.as<RiscvISA::PCState>();
+    loop_start.set(shadow.start);
+    loop_start.compressed(false);
+    return true;
 }
 
 void
@@ -891,6 +873,9 @@ BAC::generateFetchTargets(ThreadID tid, bool &status_change)
 
         bool branch_found = false;
         bool predict_taken = false;
+        bool hw_loop_found = false;
+        std::unique_ptr<PCStateBase> hw_loop_target(cur_pc.clone());
+        refreshHardwareLoopState(tid);
 
         // Scan through the instruction stream and search for branches.
         // The BTB contains only branches where taken at least once.
@@ -899,6 +884,15 @@ BAC::generateFetchTargets(ThreadID tid, bool &status_change)
         // In the first case make the branch prediction and in the later
         // advance the PC to start the search at the following address.
         while (true) {
+            // RISC-V hardware loops redirect at LPEND without a branch
+            // instruction. If lp.setup state is visible to the
+            // frontend, model that tail as a dedicated FT exit immediately.
+            hw_loop_found = predictHardwareLoopFetchTarget(
+                tid, search_addr, *hw_loop_target);
+            if (hw_loop_found) {
+                break;
+            }
+
             // Check if the current search address can be found in the BTB
             // indicating the end of the branch.
             branch_found = bpu->BTBValid(tid, search_addr);
@@ -926,7 +920,17 @@ BAC::generateFetchTargets(ThreadID tid, bool &status_change)
         std::unique_ptr<PCStateBase> next_pc(cur_pc.clone());
         StaticInstPtr staticInst = nullptr;
 
-        if (branch_found) {
+        if (hw_loop_found) {
+            set(next_pc, *hw_loop_target);
+            predict_taken = true;
+            num_taken++;
+
+            DPRINTF(BAC,
+                    "[tid:%i, ftn:%llu] Hardware-loop tail found at PC %#x "
+                    "target:%#x\n",
+                    tid, curFT->ftNum(), cur_pc.instAddr(),
+                    next_pc->instAddr());
+        } else if (branch_found) {
             // Branch found in instruction stream. As the current
             // BPU implementation required the static instruction we need to
             // look it up from the BTB.
@@ -987,7 +991,8 @@ BAC::generateFetchTargets(ThreadID tid, bool &status_change)
         // Complete the fetch target if
         // - a branch is found
         // - or the maximum fetch bandwidth is reached.
-        curFT->finalize(cur_pc, branch_found, predict_taken, *next_pc);
+        curFT->finalize(cur_pc, branch_found, predict_taken, *next_pc,
+                        hw_loop_found);
 
         ftq->insert(tid, curFT);
         wroteToTimeBuffer = true;
@@ -1215,6 +1220,30 @@ BAC::updatePC(const DynInstPtr &inst, PCStateBase &fetch_pc,
     // any non-control exit so FTQ::popHead() succeeds whether or not
     // predictHardwareLoop() fires this cycle (shadow can lag architectural
     // LPCOUNT on O3).
+    bool hw_loop_predicted = false;
+
+    if (decoupledFrontEnd && ft && !inst->isControl() &&
+        ft->isExitHardwareLoop(inst->pcState().instAddr()) &&
+        (!inst->isMicroop() || inst->isLastMicroop())) {
+        if (ft->predTaken() &&
+            predictHardwareLoop(inst, fetch_pc, false)) {
+            inst->setPredTarg(fetch_pc);
+            predict_taken = true;
+            hw_loop_predicted = true;
+        } else if (ft->predTaken()) {
+            pendingHwLoopFtqResync[tid] = true;
+            pendingHwLoopResyncPc[tid].reset(fetch_pc.clone());
+        }
+
+        DPRINTF(BAC,
+                "[tid:%i][ft:%llu] Reached hardware-loop Fetch Target "
+                "at PC %#x, predicted:%i\n",
+                tid, ft->ftNum(), inst->pcState().instAddr(),
+                hw_loop_predicted);
+        ft = nullptr;
+        return predict_taken;
+    }
+
     if (decoupledFrontEnd && ft && ft->bpuHistory != nullptr &&
         !inst->isControl() &&
         ft->isExitBranch(inst->pcState().instAddr()) &&
@@ -1224,15 +1253,17 @@ BAC::updatePC(const DynInstPtr &inst, PCStateBase &fetch_pc,
         assert(hist->type == getBranchType(inst->staticInst));
         hist->seqNum = inst->seqNum;
 
-        // Match synthetic LPEND exits to ISA redirect semantics on O3. BTB/FTQ
-        // may still say "taken" for the final tail, but the backend falls
-        // through when LPCOUNT (after ROB inflation) says no more loop-backs.
-        const bool isa_wants_back = ft->predTaken() &&
-            hwLoopBackendRedirectExpected(inst);
-        if (isa_wants_back) {
-            set(fetch_pc, ft->readPredTarg());
+        // Synthetic LPEND exits are deterministic hardware-loop redirects,
+        // not normal conditional branches. Use the frontend shadow counter as
+        // the source of truth so the final tail falls through even if the
+        // BTB/direction predictor still says taken.
+        if (ft->predTaken() &&
+            predictHardwareLoop(inst, fetch_pc, false)) {
+            set(hist->target, fetch_pc);
+            hist->predTaken = true;
             inst->setPredTarg(fetch_pc);
             predict_taken = true;
+            hw_loop_predicted = true;
         } else if (ft->predTaken()) {
             hist->predTaken = false;
             set(hist->target, std::unique_ptr<PCStateBase>(
@@ -1244,7 +1275,7 @@ BAC::updatePC(const DynInstPtr &inst, PCStateBase &fetch_pc,
         bpu->insertPredictorHistory(tid, hist);
     }
 
-    if (predictHardwareLoop(inst, fetch_pc)) {
+    if (!hw_loop_predicted && predictHardwareLoop(inst, fetch_pc)) {
         inst->setPredTarg(fetch_pc);
         // Drop the current FT at the exit instruction so fetch can popHead.
         if (decoupledFrontEnd && ft &&

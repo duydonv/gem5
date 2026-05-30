@@ -104,10 +104,13 @@ python3 tests/gem5/riscv_ai_ext/run_perf_compare.py --skip-build
 python3 tests/gem5/riscv_ai_ext/run_perf_compare.py --out-dir /tmp/riscv_ai_perf
 python3 tests/gem5/riscv_ai_ext/run_perf_compare.py --baseline-repo /home/duydonv/gem5_baseline --update-repo /home/duydonv/gem5
 python3 tests/gem5/riscv_ai_ext/run_perf_compare.py --no-cache
+python3 tests/gem5/riscv_ai_ext/run_perf_compare.py --no-cache --memory fast-ram
 ```
 
-The last command forwards `--no-cache` to `perf_binary_run.py` (DRAM-only, for
-apples-to-apples with old NoCache results).
+`--no-cache` forwards the old direct-to-memory mode to `perf_binary_run.py`.
+By default that still uses `SingleChannelDDR3_1600`, which is useful for
+apples-to-apples with older NoCache results. Add `--memory fast-ram` to use
+`SingleChannelSimpleMemory` as a low-latency/high-bandwidth RAM backing store.
 
 For **O3**, `configs/perf_binary_run.py` enables the **decoupled front-end** (FDP) by
 default so the BTB-driven fetch path and commit-time hardware-loop BTB priming
@@ -123,8 +126,11 @@ front-end and default BP for comparison.
 fetch/load hit DRAM) and usually raises IPC on memory-heavy kernels like
 `dot4_plw_lp_clamp`. Pass **`--no-cache`** to any of these config scripts to
 restore the old direct-to-memory setup when comparing against historical
-numbers. Sizes are fixed in the script for reproducibility; tune there to match
-a specific FPGA/ASIC.
+numbers. Pass **`--memory fast-ram`** with `--no-cache` to approximate firmware
+running from kit-local RAM without L1/L2; the current fast-RAM point is
+`SingleChannelSimpleMemory(latency=1ns, latency_var=0ns, bandwidth=256GiB/s,
+size=512MiB)`. Sizes are fixed in the script for reproducibility; tune there to
+match a specific FPGA/ASIC.
 
 The script runs three cases per benchmark:
 
@@ -188,6 +194,7 @@ Useful variants:
 python3 tests/gem5/riscv_ai_ext/run_hwloop_perf_compare.py --skip-build
 python3 tests/gem5/riscv_ai_ext/run_hwloop_perf_compare.py --out-dir /tmp/riscv_ai_hwloop
 python3 tests/gem5/riscv_ai_ext/run_hwloop_perf_compare.py --cpu o3
+python3 tests/gem5/riscv_ai_ext/run_hwloop_perf_compare.py --skip-build --no-cache --memory fast-ram
 ```
 
 Prefer `--skip-build` when `hwloop_perf_bin/` is already built.

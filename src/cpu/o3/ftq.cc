@@ -56,6 +56,7 @@ FetchTarget::FetchTarget(const ThreadID _tid, const PCStateBase &_start_pc,
     : ftSeqNum(_seqNum),
       tid(_tid),
       is_branch(false),
+      is_hw_loop(false),
       taken(false),
       bpuHistory(nullptr)
 {
@@ -64,12 +65,14 @@ FetchTarget::FetchTarget(const ThreadID _tid, const PCStateBase &_start_pc,
 
 void
 FetchTarget::finalize(const PCStateBase &exit_pc, bool _is_branch,
-                      bool pred_taken, const PCStateBase &pred_pc)
+                      bool pred_taken, const PCStateBase &pred_pc,
+                      bool _is_hw_loop)
 {
     set(endPC, exit_pc);
     set(predPC, pred_pc);
     taken = pred_taken;
     is_branch = _is_branch;
+    is_hw_loop = _is_hw_loop;
 }
 
 std::string
@@ -77,7 +80,8 @@ FetchTarget::toString()
 {
     std::stringstream ss;
     ss << "FT[" << ftSeqNum << "]: [0x" << std::hex << startPC->instAddr()
-       << "->0x" << endPC->instAddr() << "|B:" << is_branch << "]";
+       << "->0x" << endPC->instAddr() << "|B:" << is_branch
+       << "|H:" << is_hw_loop << "]";
     return ss.str();
 }
 
