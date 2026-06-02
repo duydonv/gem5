@@ -144,6 +144,27 @@ The script runs three cases per benchmark:
   - `gem5/build/RISCV/gem5.opt`
   - custom optimized binary
 
+## Current Model/Board Alignment
+
+The DE2i-150/CV32E40P firmware is the hardware source of truth. The gem5
+prototype still uses custom-0 encodings, but its instruction semantics are now
+aligned to the board mapping: register-bound `clamp`, load-before-update
+`p.lw`, and CORE-V raw-immediate `lp.setup`.
+
+Use gem5 as a semantic/regression and sensitivity model, not as a direct
+cycle-for-cycle replacement for the FPGA result. In particular:
+
+- cached O3 is useful for studying pipeline/FDP behavior, but it is structurally
+  different from CV32E40P
+- plain `--no-cache` keeps the historical direct-to-DDR3 sensitivity point
+- `--no-cache --memory fast-ram` is the current kit-like low-latency RAM
+  sensitivity point
+
+As of the current handoff, the RISC-V AI smoke suite passes on `atomic`,
+`minor`, and `o3`. The hardware-loop FDP path has improved, but cached O3 still
+has one residual execute-time repair per outer `lp.setup`; the separate
+hardware-loop microbenchmark is the best place to inspect that behavior.
+
 ## Hardware-Loop Microbenchmark
 
 A separate, faster microbenchmark harness is provided for isolating the
@@ -314,3 +335,6 @@ Each run creates a timestamped directory under `perf_results/` unless
   whether O3 is recognizing loop-back early enough, because all three variants
   share the same arithmetic body and differ only in the inner control-flow
   mechanism
+- for reporting, prefer presenting the real FPGA benchmark first, then gem5
+  cached O3, no-cache DDR3, and no-cache fast-ram as modeling/sensitivity
+  points
