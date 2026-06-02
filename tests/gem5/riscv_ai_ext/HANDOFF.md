@@ -1,6 +1,6 @@
 # RISC-V AI Extension gem5 Handoff
 
-Date: 2026-05-26
+Date: 2026-06-02
 
 This note captures the current gem5-side state for the custom RISC-V AI
 extension work. It is intended for continuing the work in a new chat/session.
@@ -11,6 +11,15 @@ The FPGA implementation is based on CV32E40P on the DE2i-150 board. The
 hardware-side instruction mapping is treated as the current source of truth.
 The gem5 work is being aligned to that implementation so the theory/simulation
 story and the FPGA story stay consistent.
+
+Current documentation intent:
+
+- the SoC/FPGA repo carries the real board implementation, UART benchmark, and
+  power-analysis flow
+- this gem5 directory carries semantic regression tests plus O3/performance
+  sensitivity harnesses
+- gem5 results should support the explanation and trend story, not override
+  measured DE2i-150/CV32E40P numbers
 
 Main local paths:
 
@@ -74,7 +83,8 @@ Useful commands:
 
 ```bash
 python3 tests/gem5/riscv_ai_ext/build_binaries.py
-python3 tests/gem5/riscv_ai_ext/test.py
+cd tests
+./main.py run gem5/riscv_ai_ext --length=quick --skip-build
 ```
 
 ## Main Performance Benchmarks
@@ -275,8 +285,8 @@ python3 tests/gem5/riscv_ai_ext/run_hwloop_perf_compare.py --save-baseline
 
 ## Next Work Items
 
-1. Refine the kit-like memory mode if needed.
-   - Implemented `--memory fast-ram` in `perf_binary_run.py` and
+1. Keep the kit-like memory mode documented/tunable.
+   - `--memory fast-ram` is implemented in `perf_binary_run.py` and
      `local_binary_run.py`.
    - Current fast-RAM parameters: `SingleChannelSimpleMemory(latency=1ns,
      latency_var=0ns, bandwidth=256GiB/s, size=512MiB)`.
@@ -295,12 +305,12 @@ python3 tests/gem5/riscv_ai_ext/run_hwloop_perf_compare.py --save-baseline
    - If FPGA `cv.mac` effectively has different latency/throughput, gem5 should
      either document the mismatch or add a better op-class/latency model.
 
-4. Decide final reporting structure.
+4. Keep final reporting structure consistent across repos.
    - Main thesis story should emphasize real FPGA execution.
    - gem5 should support the theory/semantic/relative trend story, not override
      kit measurements when O3 is structurally different from CV32E40P.
-   - Recommended tables: cached O3, no-cache DDR3 sensitivity, and fast-RAM/no
-     cache once implemented.
+   - Recommended table order: DE2i-150/CV32E40P board result first, then gem5
+     cached O3, no-cache DDR3 sensitivity, and no-cache fast-RAM sensitivity.
 
-5. After model/test direction is stable, update README and regenerate any
-   reference summaries.
+5. After model/test direction is stable, regenerate any reference summaries.
+   - README/HANDOFF docs were synchronized on 2026-06-02.

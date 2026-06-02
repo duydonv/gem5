@@ -46,3 +46,20 @@ Hardware-loop fast path (BAC) — design notes
      commitAdvancePC decrements it, install a BTB entry LPEND→LPSTART with the
      tail’s StaticInst; if LPCOUNT was 1 (last iteration), invalidate that BTB
      slot so later code at LPEND is not mispredicted as a loop back-edge.
+
+10) LP_SETUP_I scheduling
+   - lp.setup is SerializeBefore + SerializeAfter, not NonSpeculative. This
+     lets O3 publish the loop CSRs when lp.setup executes while still keeping
+     older/younger instruction ordering conservative around the setup.
+
+11) Dedicated FT marker for hardware-loop tails
+   - FetchTarget has an explicit hardware-loop-tail marker. BAC can represent
+     LPEND as a deterministic FT exit without pretending every direct LPEND
+     target was a normal branch predictor entry.
+
+12) Rejected setup-time resteer
+   - An IEW squash/re-fetch immediately after lp.setup execute made
+     nonControlRedirects drop to zero, but fast-ram cycles regressed. It merely
+     moved cost from the first tail redirect to setup-time squash/re-fetch, so
+     keep that experiment out of the model unless the implementation changes
+     to rebuild/split FTs without flushing the pipeline.
